@@ -1,0 +1,9 @@
+{
+  "name": "ACT Doctor Call",
+  "short_name": "ACT Doctor",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f7fb",
+  "theme_color": "#1f6feb",
+  "description": "Doctor case notification and review demo"
+}

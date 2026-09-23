@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block title %}Case {{ case.case_no }}{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div style="
+        display:flex;
+        justify-content:space-between;
+        gap:12px;
+        flex-wrap:wrap;
+        align-items:center
+    ">
+        <div>
+            <h2 style="margin:0 0 6px">
+                Case {{ case.case_no }}
+            </h2>
+
+            <div style="color:var(--muted)">
+                {{ case.specialty }}
+                · {{ case.doctor }}
+                · <b>{{ case.status }}</b>
+            </div>
+        </div>
+
+        <div class="actions">
+            {% if session.get('role') == 'doctor'
+                  and case.status not in ['Accepted','Rejected'] %}
+
+            <form method="post"
+                  action="{{ url_for(
+                      'case_decision',
+                      case_id=case.id,
+                      decision='Accepted'
+                  ) }}">
+                <button class="btn btn-success">
+                    Accept ✅
+                </button>
+            </form>
+
+            <form method="post"
+                  action="{{ url_for(
+                      'case_decision',
+                      case_id=case.id,
+                      decision='Rejected'
+                  ) }}">
+                <button class="btn btn-danger">
+                    Reject ❌
+                </button>
+            </form>
+
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <iframe
+        src="{{ url_for('uploaded_file', filename=case.pdf_filename) }}">
+    </iframe>
+</div>
+{% endblock %}

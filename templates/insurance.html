@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block title %}Insurance - ACT Doctor Call{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2 style="margin-top:0">Send New Case</h2>
+
+    <form method="post"
+          action="{{ url_for('new_case') }}"
+          enctype="multipart/form-data">
+
+        <div class="grid">
+            <div>
+                <label>Case No. *</label>
+                <input name="case_no" placeholder="e.g. AC-1001" required>
+            </div>
+
+            <div>
+                <label>Patient Ref.</label>
+                <input name="patient_ref" placeholder="Demo reference only">
+            </div>
+
+            <div>
+                <label>Specialty *</label>
+                <select name="specialty" required>
+                    <option value="">Choose specialty</option>
+                    <option>Cardiology</option>
+                    <option>Internal Medicine</option>
+                    <option>General Surgery</option>
+                    <option>Orthopedics</option>
+                    <option>Neurology</option>
+                    <option>ICU</option>
+                    <option>Pediatrics</option>
+                    <option>OB/GYN</option>
+                </select>
+            </div>
+
+            <div>
+                <label>Doctor *</label>
+                <select name="doctor" required>
+                    <option value="">Choose doctor</option>
+                    <option>Demo Doctor</option>
+                </select>
+            </div>
+
+            <div style="grid-column:1/-1">
+                <label>Medical File PDF *</label>
+                <input type="file" name="pdf" accept="application/pdf" required>
+            </div>
+        </div>
+
+        <div style="margin-top:14px">
+            <button class="btn btn-primary">
+                Send to Doctor 🔔
+            </button>
+        </div>
+    </form>
+</div>
+
+<div class="card">
+    <h2 style="margin-top:0">Cases</h2>
+
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Case</th>
+                <th>Specialty</th>
+                <th>Doctor</th>
+                <th>Status</th>
+                <th>Sent</th>
+                <th>Opened</th>
+                <th>Decision</th>
+                <th></th>
+            </tr>
+        </thead>
+
+        <tbody>
+            {% for c in cases %}
+            <tr>
+                <td>{{ c.id }}</td>
+                <td>{{ c.case_no }}</td>
+                <td>{{ c.specialty }}</td>
+                <td>{{ c.doctor }}</td>
+                <td><span class="badge">{{ c.status }}</span></td>
+                <td>{{ c.sent_at }}</td>
+                <td>{{ c.opened_at or '-' }}</td>
+                <td>{{ c.decided_at or '-' }}</td>
+                <td>
+                    <a class="btn btn-light"
+                       href="{{ url_for('open_case', case_id=c.id) }}">
+                        View
+                    </a>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="9" style="color:var(--muted)">
+                    No cases yet.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+
+{% block title %}Doctor - ACT Doctor Call{% endblock %}
+
+{% block content %}
+
+<div class="card">
+    <div class="notification-box">
+        <div>
+            <h2 style="margin:0 0 6px">Phone Notifications 🔔</h2>
+            <div id="notificationStatus" class="small">
+                Checking notification status...
+            </div>
+        </div>
+
+        <button id="enableNotifications"
+                class="btn btn-primary"
+                type="button">
+            Enable Notifications
+        </button>
+    </div>
+</div>
+
+<div class="card">
+    <h2 style="margin-top:0">Doctor Inbox</h2>
+    <p style="color:var(--muted)">
+        Open a case to review the PDF and make a decision.
+    </p>
+
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Case</th>
+                <th>Specialty</th>
+                <th>Status</th>
+                <th>Sent</th>
+                <th></th>
+            </tr>
+        </thead>
+
+        <tbody>
+            {% for c in cases %}
+            <tr>
+                <td>{{ c.id }}</td>
+                <td>{{ c.case_no }}</td>
+                <td>{{ c.specialty }}</td>
+                <td><span class="badge">{{ c.status }}</span></td>
+                <td>{{ c.sent_at }}</td>
+                <td>
+                    <a class="btn btn-primary"
+                       href="{{ url_for('open_case', case_id=c.id) }}">
+                        Open Case
+                    </a>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="6" style="color:var(--muted)">
+                    No cases received.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% endblock %}
+
+
+{% block scripts %}
+<script>
+const VAPID_PUBLIC_KEY = "{{ vapid_public_key }}";
+
+function urlBase64ToUint8Array(base64String) {
+    const padding = "=".repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding)
+        .replace(/-/g, "+")
+        .replace(/_/g, "/");
+
+    const rawData = window.atob(base64);
+    return Uint8Array.from([...rawData].map(char => char.charCodeAt(0)));
+}
+
+async function setStatus(message, enabled=false) {
+    const status = document.getElementById("notificationStatus");
+    const button = document.getElementById("enableNotifications");
+
+    status.textContent = message;
+
+    if (enabled) {
+        button.textContent = "Notifications Enabled ✅";
+        button.disabled = true;
+        button.className = "btn btn-success";
+    }
+}
+
+async function enablePush() {
+    if (!("serviceWorker" in navigator)) {
+        setStatus("This browser does not support Service Workers.");
+        return;
+    }
+
+    if (!("PushManager" in window)) {
+        setStatus("Push notifications are not supported in this browser.");
+        return;
+    }
+
+    const permission = await Notification.requestPermission();
+
+    if (permission !== "granted") {
+        setStatus("Notification permission was not granted.");
+        return;
+    }
+
+    const registration = await navigator.serviceWorker.register("/sw.js");
+
+    let subscription = await registration.pushManager.getSubscription();
+
+    if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+        });
+    }
+
+    const response = await fetch("/api/push/subscribe", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify(subscription)
+    });
+
+    const result = await response.json();
+
+    if (result.ok) {
+        setStatus("This device is registered for new case notifications.", true);
+    } else {
+        setStatus("Could not register this device.");
+    }
+}
+
+document.getElementById("enableNotifications")
+    .addEventListener("click", enablePush);
+
+window.addEventListener("load", async () => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+        setStatus("Push notifications are not supported in this browser.");
+        return;
+    }
+
+    try {
+        const registration = await navigator.serviceWorker.register("/sw.js");
+        const subscription = await registration.pushManager.getSubscription();
+
+        if (subscription && Notification.permission === "granted") {
+            const response = await fetch("/api/push/subscribe", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(subscription)
+            });
+
+            const result = await response.json();
+
+            if (result.ok) {
+                setStatus("This device is registered for new case notifications.", true);
+                return;
+            }
+        }
+
+        if (Notification.permission === "denied") {
+            setStatus("Notifications are blocked in browser settings.");
+        } else {
+            setStatus("Tap Enable Notifications on the doctor's phone.");
+        }
+    } catch (err) {
+        console.error(err);
+        setStatus("Notification setup is waiting for a secure HTTPS connection.");
+    }
+});
+</script>
+{% endblock %}
