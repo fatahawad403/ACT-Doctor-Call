@@ -140,6 +140,42 @@ def require_role(role):
     return session.get("role") == role
 
 
+def usage_increment(metric):
+    # Aggregate totals only: no IP address or patient information.
+    with db() as con:
+        con.execute("INSERT INTO usage_totals(metric,count) VALUES(?,1) ON CONFLICT(metric) DO UPDATE SET count=usage_totals.count+1",(metric,))
+
+
+@app.before_request
+def enforce_access():
+    if request.endpoint in ("login", "logout", "static", "manifest", "service_worker"):
+        return None
+    role = session.get("role")
+    if not role:
+        return None
+    if role == "admin":
+        if not ADMIN_READY or session.get("username") != ADMIN_USERNAME:
+            session.clear()
+            return redirect(url_for("login"))
+        return None
+    if role not in ("doctor", "insurance") or session.get("username") != role:
+        session.clear()
+        return redirect(url_for("login"))
+    with db() as con:
+        row = con.execute("SELECT enabled FROM account_access WHERE username=?", (role,)).fetchone()
+        state = con.execute("SELECT enabled FROM application_control WHERE id=1").fetchone()
+    if not row or not row["enabled"]:
+        session.clear()
+        if request.path.startswith("/api/"):
+            return jsonify({"error":"Account disabled by administrator"}), 403
+        return redirect(url_for("login"))
+    if not state or not state["enabled"]:
+        if request.path.startswith("/api/"):
+            return jsonify({"error":"ACT Doctor Call temporarily closed"}), 503
+        return render_template_string("""<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ACT Doctor Call paused</title><body style="font:16px/1.6 system-ui;background:#f5f7fb;color:#172033;text-align:center;padding:12vh 18px"><h1>ACT Doctor Call temporarily closed</h1><p>The administrator has paused access.</p><a href="/logout">Sign out</a></body></html>"""), 503
+    return None
+
+
 def send_case_push(case_id, case_no, specialty):
     ensure_vapid_keys()
 
@@ -191,6 +227,8 @@ def home():
         return redirect(url_for("insurance_dashboard"))
     if session.get("role") == "doctor":
         return redirect(url_for("doctor_dashboard"))
+    if session.get("role") == "admin":
+        return redirect(url_for("admin_dashboard"))
     return redirect(url_for("login"))
 
 
@@ -201,13 +239,29 @@ def login():
         password = request.form.get("password", "")
         user = DEMO_USERS.get(username)
 
-        if user and user["password"] == password:
-            session["username"] = username
-            session["role"] = user["role"]
-            session["display_name"] = user["display_name"]
-            return redirect(url_for("home"))
+        if ADMIN_READY and username == ADMIN_USERNAME and secrets.compare_digest(password, ADMIN_PASSWORD):
+            session.clear()
+            session["username"] = ADMIN_USERNAME
+            session["role"] = "admin"
+            session["display_name"] = "ACT Administrator"
+            usage_increment("logins")
+            return redirect(url_for("admin_dashboard"))
 
-        flash("Invalid username or password.")
+        if user and secrets.compare_digest(user["password"], password):
+            with db() as con:
+                account = con.execute("SELECT enabled FROM account_access WHERE username=?", (username,)).fetchone()
+                state = con.execute("SELECT enabled FROM application_control WHERE id=1").fetchone()
+            if not account or not account["enabled"] or not state or not state["enabled"]:
+                flash("Your access is currently paused. Contact the administrator.")
+            else:
+                session.clear()
+                session["username"] = username
+                session["role"] = user["role"]
+                session["display_name"] = user["display_name"]
+                usage_increment("logins")
+                return redirect(url_for("home"))
+        else:
+            flash("Invalid username or password.")
 
     return render_template("login.html")
 
@@ -228,6 +282,7 @@ def insurance_dashboard():
             "SELECT * FROM cases ORDER BY id DESC"
         ).fetchall()
 
+    usage_increment("dashboard_views")
     return render_template("insurance.html", cases=cases)
 
 
@@ -290,6 +345,7 @@ def doctor_dashboard():
                 id DESC
         """).fetchall()
 
+    usage_increment("dashboard_views")
     return render_template(
         "doctor.html",
         cases=cases,
