@@ -455,6 +455,111 @@ def uploaded_file(filename):
     )
 
 
+
+ADMIN_HTML = """
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ACT Doctor Call · Admin Control</title><style>
+*{box-sizing:border-box}body{margin:0;background:#f3f6fb;color:#18334f;font:15px/1.5 system-ui,Arial}
+main{max-width:900px;margin:20px auto;padding:0 14px}header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+section{background:white;border:1px solid #dfe6f0;border-radius:16px;padding:18px;margin:15px 0;box-shadow:0 3px 15px #182c4d10}
+h1{font-size:25px;margin:0}h2{font-size:18px;margin-top:0}a{color:#1764ad;text-decoration:none}
+form{display:inline-block}button{padding:11px 17px;border:0;border-radius:9px;background:#155ca5;color:white;cursor:pointer;font-weight:750}
+button.danger{background:#b12e38}small{color:#667c91}.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.metrics div{background:#eef4fc;border-radius:12px;padding:14px}.metrics strong{font-size:26px}
+table{width:100%;border-collapse:collapse}td,th{padding:12px 8px;border-bottom:1px solid #e5edf3;text-align:left}
+.alert{background:#fff3dd;color:#794d14;padding:12px;border-radius:10px}
+@media(max-width:550px){.metrics{grid-template-columns:1fr}main{margin:8px auto}section{padding:14px}}
+</style></head><body><main>
+<section><header><h1>Doctor Call · Admin Control</h1><a href="/logout">Sign out</a></header>
+<p><small>Control staff access from phone or desktop. Administrators retain access.</small></p>
+{% if notice %}<p role="status" class="alert">{{ notice }}</p>{% endif %}
+</section>
+<section><h2>Application</h2><p>Status: <strong>{{ 'OPEN' if app_enabled else 'CLOSED' }}</strong></p>
+<form method="post" action="/admin/access"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<input type="hidden" name="enabled" value="{{ '0' if app_enabled else '1' }}">
+<button class="{{ 'danger' if app_enabled else '' }}" type="submit">{{ 'Close for all staff' if app_enabled else 'Reopen for staff' }}</button></form>
+</section>
+<section><h2>User access</h2><div style="overflow-x:auto"><table><thead><tr><th>Account</th><th>Role</th><th>Status</th><th>Action</th></tr></thead>
+<tbody>{% for u in accounts %}<tr><td>{{ u['username'] }}</td><td>{{ u['username']|title }}</td>
+<td>{{ 'Enabled' if u['enabled'] else 'Disabled' }}</td><td>
+<form method="post" action="/admin/user/{{ u['username'] }}/toggle">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<button type="submit">{{ 'Disable' if u['enabled'] else 'Enable' }}</button></form>
+</td></tr>{% endfor %}</tbody></table></div></section>
+<section><h2>Usage (from activation)</h2><div class="metrics">
+<div>Sign-ins<br><strong>{{ usage.get('logins',0) }}</strong></div>
+<div>Dashboard views<br><strong>{{ usage.get('dashboard_views',0) }}</strong></div>
+<div>Reported installs<br><strong>{{ usage.get('installs',0) }}</strong></div></div>
+<p><small>Install events are reported only on supported browsers, not app-store downloads.</small></p>
+</section>
+<section><p class="alert">Demo storage: SQLite settings and counters may reset after Render restarts or redeploys. Do not use real patient PDFs without persistent storage and secure staff authentication.</p></section>
+</main></body></html>
+"""
+
+
+def admin_token():
+    token = session.get("doctorcall_admin_csrf")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["doctorcall_admin_csrf"] = token
+    return token
+
+
+def admin_form_authorized():
+    token = session.get("doctorcall_admin_csrf")
+    return (require_role("admin") and ADMIN_READY and bool(token)
+            and secrets.compare_digest(token, request.form.get("csrf_token", "")))
+
+
+@app.route("/admin")
+def admin_dashboard():
+    if not require_role("admin") or not ADMIN_READY:
+        return redirect(url_for("login"))
+    with db() as con:
+        accounts = con.execute("SELECT username,enabled FROM account_access ORDER BY username").fetchall()
+        state = con.execute("SELECT enabled FROM application_control WHERE id=1").fetchone()
+        rows = con.execute("SELECT metric,count FROM usage_totals").fetchall()
+    notices = {"app_changed":"Application access updated.","user_changed":"Account status updated.","invalid":"Request rejected."}
+    return render_template_string(ADMIN_HTML, accounts=accounts,
+                                  app_enabled=bool(state and state["enabled"]),
+                                  usage={r["metric"]:r["count"] for r in rows},
+                                  csrf_token=admin_token(),
+                                  notice=notices.get(request.args.get("notice"),""))
+
+
+@app.route("/admin/access", methods=["POST"])
+def admin_access():
+    if not admin_form_authorized():
+        return "Forbidden", 403
+    enabled = request.form.get("enabled")
+    if enabled not in ("0","1"):
+        return redirect(url_for("admin_dashboard",notice="invalid"))
+    with db() as con:
+        con.execute("UPDATE application_control SET enabled=?,updated_at=? WHERE id=1",
+                    (int(enabled),now_riyadh()))
+    return redirect(url_for("admin_dashboard",notice="app_changed"))
+
+
+@app.route("/admin/user/<username>/toggle", methods=["POST"])
+def admin_toggle_user(username):
+    if not admin_form_authorized():
+        return "Forbidden", 403
+    if username not in DEMO_USERS:
+        return redirect(url_for("admin_dashboard",notice="invalid"))
+    with db() as con:
+        con.execute("UPDATE account_access SET enabled=CASE WHEN enabled=1 THEN 0 ELSE 1 END WHERE username=?", (username,))
+    return redirect(url_for("admin_dashboard",notice="user_changed"))
+
+
+@app.route("/api/usage/install", methods=["POST"])
+def app_installed():
+    if session.get("role") not in ("doctor","insurance"):
+        return jsonify({"error":"Unauthorized"}), 401
+    usage_increment("installs")
+    return Response(status=204)
+
+
 @app.route("/sw.js")
 def service_worker():
     response = send_from_directory(
