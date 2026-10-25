@@ -5,25 +5,25 @@
 {% block content %}
 <div class="login card">
     <h2 style="margin-top:0">ACT Doctor Call</h2>
-    <p style="color:var(--muted)">Demo login</p>
+    <p style="color:var(--muted)">Secure administrator access and demo staff login</p>
 
     <form method="post">
         <div style="margin-bottom:12px">
             <label>Username</label>
-            <input name="username" placeholder="insurance or doctor" required>
+            <input name="username" placeholder="Username" required>
         </div>
 
         <div style="margin-bottom:16px">
             <label>Password</label>
-            <input type="password" name="password" placeholder="1234" required>
+            <input type="password" name="password" placeholder="Password" required>
         </div>
 
         <button class="btn btn-primary" style="width:100%">Login</button>
     </form>
 
     <div style="margin-top:16px;font-size:13px;color:var(--muted)">
-        Insurance: <b>insurance / 1234</b><br>
-        Doctor: <b>doctor / 1234</b>
+        Administrator: sign in using the configured owner credentials.<br>
+        Demo staff accounts are for dummy cases only.
     </div>
 </div>
 {% endblock %}

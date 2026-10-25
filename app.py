@@ -1,6 +1,6 @@
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    session, send_from_directory, flash, jsonify, Response
+    session, send_from_directory, flash, jsonify, Response, render_template_string
 )
 import sqlite3
 from pathlib import Path
@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 from werkzeug.utils import secure_filename
 import json
 import base64
+import os
+import secrets
 
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization
@@ -24,11 +26,19 @@ VAPID_PRIVATE_FILE = BASE_DIR / "vapid_private_key.pem"
 VAPID_PUBLIC_FILE = BASE_DIR / "vapid_public_key.txt"
 
 app = Flask(__name__)
-app.secret_key = "ACT-doctor-call-demo-change-this-secret"
+app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 app.config["UPLOAD_FOLDER"] = str(UPLOAD_FOLDER)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
 ALLOWED_EXTENSIONS = {"pdf"}
+
+# Admin sign-in is disabled until both values are configured on Render.
+ADMIN_USERNAME = os.environ.get("ACT_ADMIN_USERNAME", "admin").strip().lower()
+ADMIN_PASSWORD = os.environ.get("ACT_ADMIN_PASSWORD", "")
+ADMIN_READY = bool(os.environ.get("SECRET_KEY") and len(ADMIN_PASSWORD) >= 12
+                   and bool(ADMIN_USERNAME) and ADMIN_USERNAME not in ("insurance", "doctor"))
+
 
 DEMO_USERS = {
     "insurance": {
@@ -81,6 +91,12 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
+        con.execute("CREATE TABLE IF NOT EXISTS application_control (id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL)")
+        con.execute("INSERT OR IGNORE INTO application_control(id,enabled,updated_at) VALUES(1,1,?)",(now_riyadh(),))
+        con.execute("CREATE TABLE IF NOT EXISTS account_access(username TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1)")
+        for name in DEMO_USERS:
+            con.execute("INSERT OR IGNORE INTO account_access(username,enabled) VALUES(?,1)",(name,))
+        con.execute("CREATE TABLE IF NOT EXISTS usage_totals(metric TEXT PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0)")
 
 
 def ensure_vapid_keys():
@@ -122,6 +138,42 @@ def allowed_file(filename):
 
 def require_role(role):
     return session.get("role") == role
+
+
+def usage_increment(metric):
+    # Aggregate totals only: no IP address or patient information.
+    with db() as con:
+        con.execute("INSERT INTO usage_totals(metric,count) VALUES(?,1) ON CONFLICT(metric) DO UPDATE SET count=usage_totals.count+1",(metric,))
+
+
+@app.before_request
+def enforce_access():
+    if request.endpoint in ("login", "logout", "static", "manifest", "service_worker"):
+        return None
+    role = session.get("role")
+    if not role:
+        return None
+    if role == "admin":
+        if not ADMIN_READY or session.get("username") != ADMIN_USERNAME:
+            session.clear()
+            return redirect(url_for("login"))
+        return None
+    if role not in ("doctor", "insurance") or session.get("username") != role:
+        session.clear()
+        return redirect(url_for("login"))
+    with db() as con:
+        row = con.execute("SELECT enabled FROM account_access WHERE username=?", (role,)).fetchone()
+        state = con.execute("SELECT enabled FROM application_control WHERE id=1").fetchone()
+    if not row or not row["enabled"]:
+        session.clear()
+        if request.path.startswith("/api/"):
+            return jsonify({"error":"Account disabled by administrator"}), 403
+        return redirect(url_for("login"))
+    if not state or not state["enabled"]:
+        if request.path.startswith("/api/"):
+            return jsonify({"error":"ACT Doctor Call temporarily closed"}), 503
+        return render_template_string("""<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ACT Doctor Call paused</title><body style="font:16px/1.6 system-ui;background:#f5f7fb;color:#172033;text-align:center;padding:12vh 18px"><h1>ACT Doctor Call temporarily closed</h1><p>The administrator has paused access.</p><a href="/logout">Sign out</a></body></html>"""), 503
+    return None
 
 
 def send_case_push(case_id, case_no, specialty):
@@ -175,6 +227,8 @@ def home():
         return redirect(url_for("insurance_dashboard"))
     if session.get("role") == "doctor":
         return redirect(url_for("doctor_dashboard"))
+    if session.get("role") == "admin":
+        return redirect(url_for("admin_dashboard"))
     return redirect(url_for("login"))
 
 
@@ -185,13 +239,29 @@ def login():
         password = request.form.get("password", "")
         user = DEMO_USERS.get(username)
 
-        if user and user["password"] == password:
-            session["username"] = username
-            session["role"] = user["role"]
-            session["display_name"] = user["display_name"]
-            return redirect(url_for("home"))
+        if ADMIN_READY and username == ADMIN_USERNAME and secrets.compare_digest(password, ADMIN_PASSWORD):
+            session.clear()
+            session["username"] = ADMIN_USERNAME
+            session["role"] = "admin"
+            session["display_name"] = "ACT Administrator"
+            usage_increment("logins")
+            return redirect(url_for("admin_dashboard"))
 
-        flash("Invalid username or password.")
+        if user and secrets.compare_digest(user["password"], password):
+            with db() as con:
+                account = con.execute("SELECT enabled FROM account_access WHERE username=?", (username,)).fetchone()
+                state = con.execute("SELECT enabled FROM application_control WHERE id=1").fetchone()
+            if not account or not account["enabled"] or not state or not state["enabled"]:
+                flash("Your access is currently paused. Contact the administrator.")
+            else:
+                session.clear()
+                session["username"] = username
+                session["role"] = user["role"]
+                session["display_name"] = user["display_name"]
+                usage_increment("logins")
+                return redirect(url_for("home"))
+        else:
+            flash("Invalid username or password.")
 
     return render_template("login.html")
 
@@ -212,6 +282,7 @@ def insurance_dashboard():
             "SELECT * FROM cases ORDER BY id DESC"
         ).fetchall()
 
+    usage_increment("dashboard_views")
     return render_template("insurance.html", cases=cases)
 
 
@@ -274,6 +345,7 @@ def doctor_dashboard():
                 id DESC
         """).fetchall()
 
+    usage_increment("dashboard_views")
     return render_template(
         "doctor.html",
         cases=cases,
@@ -381,6 +453,111 @@ def uploaded_file(filename):
         app.config["UPLOAD_FOLDER"],
         filename
     )
+
+
+
+ADMIN_HTML = """
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ACT Doctor Call · Admin Control</title><style>
+*{box-sizing:border-box}body{margin:0;background:#f3f6fb;color:#18334f;font:15px/1.5 system-ui,Arial}
+main{max-width:900px;margin:20px auto;padding:0 14px}header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+section{background:white;border:1px solid #dfe6f0;border-radius:16px;padding:18px;margin:15px 0;box-shadow:0 3px 15px #182c4d10}
+h1{font-size:25px;margin:0}h2{font-size:18px;margin-top:0}a{color:#1764ad;text-decoration:none}
+form{display:inline-block}button{padding:11px 17px;border:0;border-radius:9px;background:#155ca5;color:white;cursor:pointer;font-weight:750}
+button.danger{background:#b12e38}small{color:#667c91}.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.metrics div{background:#eef4fc;border-radius:12px;padding:14px}.metrics strong{font-size:26px}
+table{width:100%;border-collapse:collapse}td,th{padding:12px 8px;border-bottom:1px solid #e5edf3;text-align:left}
+.alert{background:#fff3dd;color:#794d14;padding:12px;border-radius:10px}
+@media(max-width:550px){.metrics{grid-template-columns:1fr}main{margin:8px auto}section{padding:14px}}
+</style></head><body><main>
+<section><header><h1>Doctor Call · Admin Control</h1><a href="/logout">Sign out</a></header>
+<p><small>Control staff access from phone or desktop. Administrators retain access.</small></p>
+{% if notice %}<p role="status" class="alert">{{ notice }}</p>{% endif %}
+</section>
+<section><h2>Application</h2><p>Status: <strong>{{ 'OPEN' if app_enabled else 'CLOSED' }}</strong></p>
+<form method="post" action="/admin/access"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<input type="hidden" name="enabled" value="{{ '0' if app_enabled else '1' }}">
+<button class="{{ 'danger' if app_enabled else '' }}" type="submit">{{ 'Close for all staff' if app_enabled else 'Reopen for staff' }}</button></form>
+</section>
+<section><h2>User access</h2><div style="overflow-x:auto"><table><thead><tr><th>Account</th><th>Role</th><th>Status</th><th>Action</th></tr></thead>
+<tbody>{% for u in accounts %}<tr><td>{{ u['username'] }}</td><td>{{ u['username']|title }}</td>
+<td>{{ 'Enabled' if u['enabled'] else 'Disabled' }}</td><td>
+<form method="post" action="/admin/user/{{ u['username'] }}/toggle">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<button type="submit">{{ 'Disable' if u['enabled'] else 'Enable' }}</button></form>
+</td></tr>{% endfor %}</tbody></table></div></section>
+<section><h2>Usage (from activation)</h2><div class="metrics">
+<div>Sign-ins<br><strong>{{ usage.get('logins',0) }}</strong></div>
+<div>Dashboard views<br><strong>{{ usage.get('dashboard_views',0) }}</strong></div>
+<div>Reported installs<br><strong>{{ usage.get('installs',0) }}</strong></div></div>
+<p><small>Install events are reported only on supported browsers, not app-store downloads.</small></p>
+</section>
+<section><p class="alert">Demo storage: SQLite settings and counters may reset after Render restarts or redeploys. Do not use real patient PDFs without persistent storage and secure staff authentication.</p></section>
+</main></body></html>
+"""
+
+
+def admin_token():
+    token = session.get("doctorcall_admin_csrf")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["doctorcall_admin_csrf"] = token
+    return token
+
+
+def admin_form_authorized():
+    token = session.get("doctorcall_admin_csrf")
+    return (require_role("admin") and ADMIN_READY and bool(token)
+            and secrets.compare_digest(token, request.form.get("csrf_token", "")))
+
+
+@app.route("/admin")
+def admin_dashboard():
+    if not require_role("admin") or not ADMIN_READY:
+        return redirect(url_for("login"))
+    with db() as con:
+        accounts = con.execute("SELECT username,enabled FROM account_access ORDER BY username").fetchall()
+        state = con.execute("SELECT enabled FROM application_control WHERE id=1").fetchone()
+        rows = con.execute("SELECT metric,count FROM usage_totals").fetchall()
+    notices = {"app_changed":"Application access updated.","user_changed":"Account status updated.","invalid":"Request rejected."}
+    return render_template_string(ADMIN_HTML, accounts=accounts,
+                                  app_enabled=bool(state and state["enabled"]),
+                                  usage={r["metric"]:r["count"] for r in rows},
+                                  csrf_token=admin_token(),
+                                  notice=notices.get(request.args.get("notice"),""))
+
+
+@app.route("/admin/access", methods=["POST"])
+def admin_access():
+    if not admin_form_authorized():
+        return "Forbidden", 403
+    enabled = request.form.get("enabled")
+    if enabled not in ("0","1"):
+        return redirect(url_for("admin_dashboard",notice="invalid"))
+    with db() as con:
+        con.execute("UPDATE application_control SET enabled=?,updated_at=? WHERE id=1",
+                    (int(enabled),now_riyadh()))
+    return redirect(url_for("admin_dashboard",notice="app_changed"))
+
+
+@app.route("/admin/user/<username>/toggle", methods=["POST"])
+def admin_toggle_user(username):
+    if not admin_form_authorized():
+        return "Forbidden", 403
+    if username not in DEMO_USERS:
+        return redirect(url_for("admin_dashboard",notice="invalid"))
+    with db() as con:
+        con.execute("UPDATE account_access SET enabled=CASE WHEN enabled=1 THEN 0 ELSE 1 END WHERE username=?", (username,))
+    return redirect(url_for("admin_dashboard",notice="user_changed"))
+
+
+@app.route("/api/usage/install", methods=["POST"])
+def app_installed():
+    if session.get("role") not in ("doctor","insurance"):
+        return jsonify({"error":"Unauthorized"}), 401
+    usage_increment("installs")
+    return Response(status=204)
 
 
 @app.route("/sw.js")
