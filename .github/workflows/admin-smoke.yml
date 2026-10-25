@@ -1,0 +1,33 @@
+name: Admin access smoke check
+on:
+  push:
+    branches: [feature/admin-access-controls-20261025]
+  pull_request:
+    branches: [main]
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install application dependencies
+        run: pip install -r requirements.txt
+      - name: Check Python syntax
+        run: python -m py_compile app.py
+      - name: Check app import and protected routes
+        env:
+          SECRET_KEY: ci-only-safe-test-key-not-used-in-production
+          ACT_ADMIN_PASSWORD: ci-only-long-test-password-123
+        run: |
+          python - <<'PY'
+          import app
+          client = app.app.test_client()
+          assert client.get("/login").status_code == 200
+          assert client.get("/admin").status_code in (301, 302, 303)
+          client.post("/login", data={"username":"admin","password":"ci-only-long-test-password-123"})
+          assert client.get("/admin").status_code == 200
+          assert client.post("/admin/access",data={"enabled":"0","csrf_token":"invalid"}).status_code == 403
+          print("Doctor Call admin login and CSRF protections OK")
+          PY
