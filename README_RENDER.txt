@@ -50,3 +50,25 @@ IMPORTANT DEMO LIMITATIONS
   On a free/ephemeral deployment they can be lost after restart/redeploy.
 - If VAPID keys change, the phone must press Enable Notifications again.
 - This package is for proof-of-concept testing, not production medical data.
+
+ADMINISTRATION (new)
+--------------------
+Set Render environment variables before using the administrator controls:
+  SECRET_KEY = long randomly generated secret (32+ random bytes)
+  ACT_ADMIN_USERNAME = admin (optional)
+  ACT_ADMIN_PASSWORD = your own unique strong password, 12+ characters
+
+No admin login is enabled without both SECRET_KEY and ACT_ADMIN_PASSWORD.
+Do not use any of the demo credentials for the admin password.
+
+After redeploy, open: https://YOUR-DOCTOR-CALL-SERVICE.onrender.com/admin
+Sign in with the configured administrator credentials.
+The admin can open/close the application for insurance and doctors, or enable/disable each demo account.
+Existing signed-in staff are checked on each request and are blocked when access is revoked.
+
+Usage includes successful sign-ins, dashboard views, and browser-reported PWA installs.
+Counters start from feature rollout, not historical downloads. No personal visitor data is tracked.
+
+CRITICAL: The current demo still has weak shared staff credentials (1234).
+SQLite database, uploaded PDFs, and keys may be erased after Render restarts/redeploys.
+Keep the app limited to dummy data until real staff authentication and persistent storage exist.
