@@ -1,6 +1,6 @@
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    session, send_from_directory, flash, jsonify, Response
+    session, send_from_directory, flash, jsonify, Response, render_template_string
 )
 import sqlite3
 from pathlib import Path
@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 from werkzeug.utils import secure_filename
 import json
 import base64
+import os
+import secrets
 
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization
@@ -24,11 +26,19 @@ VAPID_PRIVATE_FILE = BASE_DIR / "vapid_private_key.pem"
 VAPID_PUBLIC_FILE = BASE_DIR / "vapid_public_key.txt"
 
 app = Flask(__name__)
-app.secret_key = "ACT-doctor-call-demo-change-this-secret"
+app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 app.config["UPLOAD_FOLDER"] = str(UPLOAD_FOLDER)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
 ALLOWED_EXTENSIONS = {"pdf"}
+
+# Admin sign-in is disabled until both values are configured on Render.
+ADMIN_USERNAME = os.environ.get("ACT_ADMIN_USERNAME", "admin").strip().lower()
+ADMIN_PASSWORD = os.environ.get("ACT_ADMIN_PASSWORD", "")
+ADMIN_READY = bool(os.environ.get("SECRET_KEY") and len(ADMIN_PASSWORD) >= 12
+                   and ADMIN_USERNAME not in ("insurance", "doctor"))
+
 
 DEMO_USERS = {
     "insurance": {
@@ -81,6 +91,12 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
+        con.execute("CREATE TABLE IF NOT EXISTS application_control (id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL)")
+        con.execute("INSERT OR IGNORE INTO application_control(id,enabled,updated_at) VALUES(1,1,?)",(now_riyadh(),))
+        con.execute("CREATE TABLE IF NOT EXISTS account_access(username TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1)")
+        for name in DEMO_USERS:
+            con.execute("INSERT OR IGNORE INTO account_access(username,enabled) VALUES(?,1)",(name,))
+        con.execute("CREATE TABLE IF NOT EXISTS usage_totals(metric TEXT PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0)")
 
 
 def ensure_vapid_keys():
