@@ -37,7 +37,7 @@ ALLOWED_EXTENSIONS = {"pdf"}
 ADMIN_USERNAME = os.environ.get("ACT_ADMIN_USERNAME", "admin").strip().lower()
 ADMIN_PASSWORD = os.environ.get("ACT_ADMIN_PASSWORD", "")
 ADMIN_READY = bool(os.environ.get("SECRET_KEY") and len(ADMIN_PASSWORD) >= 12
-                   and ADMIN_USERNAME not in ("insurance", "doctor"))
+                   and bool(ADMIN_USERNAME) and ADMIN_USERNAME not in ("insurance", "doctor"))
 
 
 DEMO_USERS = {
