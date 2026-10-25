@@ -193,6 +193,9 @@
 
         <div>
             <span style="margin-right:10px">{{ session.get('display_name') }}</span>
+            {% if session.get('role') == 'admin' %}
+            <a class="btn btn-primary" href="{{ url_for('admin_dashboard') }}">Admin Control</a>
+            {% endif %}
             <a class="btn btn-light" href="{{ url_for('logout') }}">Logout</a>
         </div>
     </div>
@@ -211,5 +214,10 @@
     </div>
 
     {% block scripts %}{% endblock %}
+    <script>
+    window.addEventListener("appinstalled", function(){
+        if (navigator.sendBeacon) navigator.sendBeacon("/api/usage/install", "");
+    });
+    </script>
 </body>
 </html>
